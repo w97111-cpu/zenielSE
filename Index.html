@@ -1,0 +1,220 @@
+<!doctype html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>제니엘 연차 사용촉진</title>
+<style>
+:root{font:15px "Malgun Gothic",system-ui,sans-serif;color:#17243a;background:#f3f6fb}*{box-sizing:border-box}body{margin:0}header{background:#142745;color:white;padding:23px max(22px,calc((100vw - 1280px)/2));display:flex;justify-content:space-between;align-items:center;gap:16px}header strong{letter-spacing:.16em}header span{font-size:.85rem;color:#c9defc}main{max-width:1328px;margin:auto;padding:32px 24px}h1{margin:0 0 8px;font-size:2rem}h2{margin:0 0 14px}p{line-height:1.6;margin:0 0 16px}.sub,small{color:#50627b}.cards{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin:22px 0}.card,.panel{background:white;border:1px solid #dce5f0;border-radius:12px}.card{padding:16px}.card b{display:block;font-size:1.65rem;margin-top:7px}.panel{padding:18px}.bar,nav,.actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.bar{margin:14px 0}button,input,select,textarea{font:inherit;border:1px solid #b9c9dc;border-radius:7px;background:white;color:inherit;padding:8px 10px}button{cursor:pointer}button:hover{background:#eaf2ff}.primary,button[aria-pressed=true]{background:#2453a8;color:white;border-color:#2453a8}.primary:hover{background:#173d82}.scroll{overflow:auto;max-height:62vh}table{border-collapse:collapse;width:100%;white-space:nowrap}th,td{padding:10px;text-align:left;border-bottom:1px solid #e4ebf5}th{position:sticky;top:0;background:#ebf2fb}.badge{background:#eaf0fb;padding:4px 8px;border-radius:5px;font-size:.85rem}.ok{background:#d8f4e9}dialog{border:1px solid #cbd9ec;border-radius:12px;width:min(740px,95vw);max-height:90vh;padding:20px}dialog::backdrop{background:#13243d99}.form{display:grid;grid-template-columns:repeat(2,1fr);gap:10px;margin:12px 0}label{display:flex;flex-direction:column;gap:5px;font-size:.85rem}textarea{min-height:55px}pre{white-space:pre-wrap}#feedback{min-height:23px;color:#274b80;margin-bottom:4px}@media(max-width:600px){.cards{grid-template-columns:repeat(2,1fr)}main{padding:20px 12px}}
+</style></head><body>
+<header><strong>ZENIEL</strong><span id="mode"></span></header>
+<main><h1>연차 사용촉진 관리</h1><p class="sub">전자랜드 상담사 · 코스트코 큐레이터 | 2026년 10월 대장 반영</p>
+<div class="cards" id="metrics"></div>
+<div class="panel"><nav id="tabs"></nav>
+<div class="bar"><input id="search" placeholder="이름 · 사번 · 매장" aria-label="직원 검색"><select id="channel" aria-label="채널"><option>전체</option><option>전자랜드</option><option>코스트코</option></select><input type="date" id="today" aria-label="판정 기준일"><button id="add" class="primary"></button><button id="backup">데이터 내보내기</button><button id="restore">데이터 가져오기</button><input id="file" type="file" accept=".json" hidden></div>
+<div id="feedback" role="status"></div><div class="scroll"><table><thead id="heads"></thead><tbody id="rows"></tbody></table></div></div></main>
+<dialog id="edit"><form id="form"><h2 id="formTitle"></h2><p class="sub" id="help"></p><div class="form" id="fields"></div><div class="actions"><button class="primary">저장</button><button id="cancel" type="button">닫기</button></div></form></dialog>
+<dialog id="preview"><h2>Gmail 안내문</h2><pre id="message"></pre><button onclick="document.getElementById('preview').close()">닫기</button></dialog>
+<script>
+function dateOK(value) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value||'')) return false;
+  const parsed = new Date(value+'T00:00:00Z');
+  return Number.isFinite(+parsed) && parsed.toISOString().slice(0,10) === value;
+}
+function daysAfter(value, count) {
+  const valueDate = new Date(value+'T00:00:00Z');
+  valueDate.setUTCDate(valueDate.getUTCDate()+count);
+  return valueDate.toISOString().slice(0,10);
+}
+function monthsAfter(value, count) {
+  const valueDate = new Date(value+'T00:00:00Z');
+  const day = valueDate.getUTCDate();
+  valueDate.setUTCDate(1);
+  valueDate.setUTCMonth(valueDate.getUTCMonth()+count);
+  const last = new Date(Date.UTC(valueDate.getUTCFullYear(),valueDate.getUTCMonth()+1,0)).getUTCDate();
+  valueDate.setUTCDate(Math.min(day,last));
+  return valueDate.toISOString().slice(0,10);
+}
+function koreaToday() {
+  return new Date(Date.now()+9*3600000).toISOString().slice(0,10);
+}
+function deadline(p) {
+  if (!dateOK(p.end) || !['일반','최초 1년','최초 1년 추가분'].includes(p.kind)) return {};
+  const next = daysAfter(p.end,1);
+  const extra = p.kind === '최초 1년 추가분';
+  const annual = p.kind === '일반';
+  const first = monthsAfter(next, annual ? -6 : extra ? -1 : -3);
+  return {first, last:daysAfter(first,extra?4:9),
+    second:extra?daysAfter(p.end,-10):daysAfter(monthsAfter(next,annual?-2:-1),-1),
+    reply:dateOK(p.received)?daysAfter(p.received,10):''};
+}
+function decision(e,p,t) {
+  const d = deadline(p);
+  const result = (state,stage=0) => ({...d,state,stage});
+  if (!e || e.status!=='재직' || (e.quit && e.quit<=t)) return result('발송 제외');
+  if (p.balance !== null && p.balance<=0) return result('잔여 없음');
+  if (!d.first || !dateOK(p.start) || p.start>p.end || !Number.isFinite(p.balance) ||
+      !['입사일','회계연도'].includes(e.basis) || !p.ready) return result('대장 검토 필요');
+  if (t>p.end) return result('사용기간 종료');
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e.email||'')) return result('이메일 확인');
+  if (p.sent2) return result('2차 발송 기록');
+  if (!p.sent1) {
+    if (p.old1 || p.old2) return result('기존 촉진 이력 확인');
+    if (t<d.first) return result('1차 예정');
+    if (t>d.last) return result('1차 기한 경과');
+    return result('1차 발송 대상',1);
+  }
+  if (!dateOK(p.sent1) || p.sent1<d.first || p.sent1>d.last) return result('1차 통보일 확인');
+  if (!d.reply || p.received<p.sent1 || p.received>t) return result('1차 수신일 확인');
+  if (p.replied>=p.balance) return result('사용계획 접수 완료');
+  if (t<=d.reply) return result('1차 회신 대기');
+  if (t>d.second) return result('2차 기한 경과');
+  const dates = (p.designated||'').trim().split(/[\s,]+/);
+  if (new Set(dates).size!==dates.length ||
+      dates.length!==Math.ceil(p.balance-(p.replied||0)) ||
+      dates.some(value=>!dateOK(value)||value<=t||value<p.start||value>p.end)) return result('2차 사용일 지정 필요');
+  return result('2차 발송 대상',2);
+}
+function notice(e,p,t,stage) {
+  const heading = '연차유급휴가 사용촉진 '+stage+'차';
+  const left = p.balance-(p.replied||0);
+  const body = stage===1
+    ? '미사용 연차 '+p.balance+'일의 사용 시기를 정해, 이 안내를 받은 날부터 10일 이내에 이 메일에 회신해 주세요.'
+    : '사용계획이 제출되지 않은 잔여 연차 '+left+'일에 대해 회사가 다음과 같이 사용일을 지정하여 통보합니다.\n지정 사용일 '+p.designated+(left%1 ? '\n마지막 지정일 사용량 '+(left%1)+'일' : '');
+  return {subject:'[제니엘] '+heading,body:e.name+' 님께\n\n'+heading+'\n발송일 '+t+'\n사용 가능 기간 '+p.start+' ~ '+p.end+'\n\n'+body+'\n\n제니엘'};
+}
+
+const seed = null;
+const $ = id=>document.getElementById(id);
+const remote = typeof google !== 'undefined' && !!google.script?.run;
+const storeKey = 'zeniel-leave-ledger-202610-v1';
+const tabs = ['직원 관리','연차 대장','촉진 일정','발송 이력'];
+let state, view=0, editing, busy=false;
+const esc = value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const val = value=>value===''||value==null?'—':esc(value);
+const rpc = (method,...args)=>new Promise((resolve,reject)=>google.script.run.withSuccessHandler(resolve).withFailureHandler(reject)[method](...args));
+const feedback = text=>$('feedback').textContent=text;
+function checked(data) {
+  if (!data || !['staff','periods','log'].every(key=>Array.isArray(data[key])) ||
+      new Set(data.staff.map(e=>e.id)).size!==data.staff.length ||
+      new Set(data.periods.map(p=>p.id)).size!==data.periods.length ||
+      data.periods.some(p=>!data.staff.some(e=>e.id===p.staff))) throw Error('데이터 형식을 확인해 주세요.');
+  return data;
+}
+async function save(next, importing=false) {
+  if (busy) throw Error('저장 중입니다.');
+  busy=true;
+  try {
+    if(remote) state=await rpc('saveLedger',next,state.rev||0,importing);
+    else {localStorage.setItem(storeKey,JSON.stringify(next));state=next;}
+    render();
+  } finally {busy=false;}
+}
+function render() {
+  const day=$('today').value||koreaToday();
+  const byId=new Map(state.staff.map(e=>[e.id,e]));
+  const pairs=state.periods.map(p=>[p,byId.get(p.staff),decision(byId.get(p.staff),p,day)]);
+  const stats=[['전자랜드',state.staff.filter(e=>e.channel==='전자랜드').length],['코스트코',state.staff.filter(e=>e.channel==='코스트코').length],
+    ['재직 인원',state.staff.filter(e=>e.status==='재직'&&(!e.quit||e.quit>day)).length],['발송 대상',pairs.filter(([, , k])=>k.stage).length]];
+  $('metrics').innerHTML=stats.map(([k,v])=>'<div class="card">'+k+'<b>'+v+'</b></div>').join('');
+  $('tabs').innerHTML=tabs.map((t,i)=>'<button data-tab="'+i+'" aria-pressed="'+(view===i)+'">'+t+'</button>').join('');
+  const term=$('search').value.trim().toLowerCase();
+  const matches=e=>e&&($('channel').value==='전체'||e.channel===$('channel').value)&&[e.name,e.store,e.number].some(v=>String(v??'').toLowerCase().includes(term));
+  const control=(action,key,text)=>'<button data-action="'+action+'" data-key="'+esc(key)+'">'+text+'</button>';
+  const names=[
+    ['채널 · 직무','사번','성명','매장','제니엘 입사일','승계·연차 기준일','적용 기준','상태','퇴사일','Gmail','관리'],
+    ['성명','연차 구분','발생','사용','대장 잔여','사용 가능','사용기간','입사일 기준','회계연도 기준','회계−입사','원본','관리'],
+    ['성명','연차 구분','잔여','1차 촉구 기간','1차 수신일','회신 마감','2차 통보 마감','상태','관리'],
+    ['시각','직원','단계','결과']
+  ];
+  let rows;
+  if(view===0) rows=state.staff.filter(matches).map(e=>[val(e.channel+' · '+e.job),val(e.number),val(e.name),val(e.store),val(e.hire),val(e.anchor),val(e.basis),val(e.status),val(e.quit),val(e.email),control('staff',e.id,'수정')]);
+  if(view===1) rows=pairs.filter(([,e])=>matches(e)).map(([p,e])=>[val(e.name),val(p.label+' · '+p.kind),val(p.earned),val(p.used),val(p.balance),val(p.available),p.end?val(p.start+' ~ '+p.end):'—',val(p.hireDays),val(p.fiscalDays),Number.isFinite(p.hireDays)&&Number.isFinite(p.fiscalDays)?val(Math.round((p.fiscalDays-p.hireDays)*100)/100):'—',val(p.source),control('period',p.id,'수정')]);
+  if(view===2) rows=pairs.filter(([,e])=>matches(e)).sort((a,b)=>b[2].stage-a[2].stage || (a[2].first||'9999').localeCompare(b[2].first||'9999')).map(([p,e,k])=>[val(e.name),val(p.label+' · '+p.kind),val(p.balance),k.first?val(k.first+' ~ '+k.last):'—',val(p.received),val(k.reply),val(k.second),'<span class="badge '+(k.stage?'ok':'')+'">'+val(k.state)+'</span>',control('period',p.id,'수정')+' '+control('notice1',p.id,'1차 문안')+' '+control('notice2',p.id,'2차 문안')]);
+  if(view===3) rows=state.log.filter(l=>matches(byId.get(l.staff))).slice().reverse().map(l=>[val(l.at),val(byId.get(l.staff)?.name),val(l.stage+'차'),val(l.result)]);
+  $('heads').innerHTML='<tr>'+names[view].map(n=>'<th>'+n+'</th>').join('')+'</tr>';
+  $('rows').innerHTML=rows.length?rows.map(r=>'<tr>'+r.map(c=>'<td>'+c+'</td>').join('')+'</tr>').join(''):'<tr><td colspan="'+names[view].length+'">표시할 항목이 없습니다.</td></tr>';
+  $('add').hidden=view===3;
+  $('add').textContent=view===0?'직원 등록':'연차 기간 추가';
+}
+const staffFields=[['channel','채널',['전자랜드','코스트코']],['number','사번','text',true],['name','성명','text',true],['store','매장','text'],['hire','제니엘 입사일','date',true],['anchor','승계·연차 기준일','date'],['basis','적용 기준',['미확정','입사일','회계연도']],['status','재직 상태',['재직','휴직','퇴사']],['quit','퇴사일','date'],['email','직원 이메일','email']];
+const periodFields=[['staff','직원','staff'],['label','기간 이름','text',true],['kind','연차 구분',['검토','일반','최초 1년','최초 1년 추가분']],['grant','발생일','date'],['start','사용기간 시작일','date'],['end','사용기간 종료일','date'],['earned','발생 일수','number'],['used','사용·차감 일수','number'],['balance','촉진 판정 잔여 일수','number'],['available','대장 사용 가능 일수','number'],['hireDays','입사일 기준 발생 일수','number'],['fiscalDays','회계연도 기준 발생 일수','number'],['sent1','1차 실제 통보일','date'],['received','1차 수신 확인일','date'],['replied','직원이 사용일을 제출한 일수','number'],['sent2','2차 실제 통보일','date'],['designated','2차 지정 사용일 (YYYY-MM-DD, 쉼표로 구분)','textarea'],['note','비고','textarea'],['ready','이 기간과 잔여 일수 확인 완료','checkbox']];
+function edit(kind,key) {
+  const collection=kind==='staff'?'staff':'periods';
+  const row=state[collection].find(x=>x.id===key)||{};
+  editing={collection,row};
+  $('formTitle').textContent=kind==='staff'?'직원 등록 · 수정':'연차 기간 · 촉진 기록';
+  $('help').textContent=kind==='staff'?'직원별로 적용 기준과 입퇴사 상태를 지정합니다.':[
+    row.source&&'원본 '+row.source, row.old1&&'대장 1차 기록 '+row.old1,row.old2&&'대장 2차 기록 '+row.old2,
+    '두 기준 일수는 확인한 값을 입력하면 차이가 계산됩니다.'
+  ].filter(Boolean).join(' · ');
+  $('fields').innerHTML=(kind==='staff'?staffFields:periodFields).map(([name,label,type,required])=>{
+    let control;
+    const v=row[name];
+    if(Array.isArray(type)||type==='staff'){
+      const opts=type==='staff'?state.staff.map(e=>[e.id,e.channel+' / '+e.name+' / '+e.number]):type.map(x=>[x,x]);
+      control='<select name="'+name+'" '+(row.id&&name==='staff'?'disabled':'')+'>'+opts.map(([k,t])=>'<option value="'+esc(k)+'" '+(k===v?'selected':'')+'>'+esc(t)+'</option>').join('')+'</select>';
+    }else if(type==='textarea') control='<textarea name="'+name+'">'+esc(v)+'</textarea>';
+    else control='<input name="'+name+'" type="'+type+'" value="'+esc(v??'')+'" '+(required?'required':'')+' '+(type==='number'?'step="0.01"':'')+' '+(type==='checkbox'&&v?'checked':'')+' '+(row.id&&['number'].includes(name)?'readonly':'')+'>';
+    return '<label>'+label+control+'</label>';
+  }).join('');
+  $('edit').showModal();
+}
+$('form').onsubmit=async event=>{
+  event.preventDefault();
+  if(busy)return;
+  const {collection,row}=editing;
+  const updated={...row};
+  for(const input of event.currentTarget.elements) if(input.name&&!input.disabled){
+    updated[input.name]=input.type==='checkbox'?input.checked:input.type==='number'?(input.value===''?null:Number(input.value)):input.value.trim();
+  }
+  if(!updated.id) updated.id=collection==='staff'?updated.channel+'/'+updated.number:updated.staff+'/'+crypto.randomUUID();
+  if(collection==='periods'&&(!updated.staff || (updated.end&&updated.start>updated.end) || (updated.replied!==null&&updated.replied<0))){
+    alert('직원, 사용기간, 회신 일수를 확인해 주세요.');return;
+  }
+  const existing=state[collection].findIndex(x=>x.id===updated.id);
+  if(existing>=0&&!row.id){alert('같은 사번이 이미 등록되어 있습니다.');return;}
+  const rows=state[collection].slice();
+  if(existing>=0)rows[existing]=updated;else rows.push(updated);
+  try {await save({...state,[collection]:rows});$('edit').close();feedback('저장했습니다.');}
+  catch(error){alert(error.message);}
+};
+$('cancel').onclick=()=>$('edit').close();
+$('tabs').onclick=e=>{if(e.target.dataset.tab!==undefined){view=Number(e.target.dataset.tab);render();}};
+$('rows').onclick=e=>{
+  const {action,key}=e.target.dataset;
+  if(action==='staff'||action==='period') return edit(action,key);
+  if(!action)return;
+  const p=state.periods.find(x=>x.id===key);
+  const message=notice(state.staff.find(x=>x.id===p.staff),p,$('today').value||koreaToday(),Number(action.slice(-1)));
+  $('message').textContent=message.subject+'\n\n'+message.body;
+  $('preview').showModal();
+};
+$('add').onclick=()=>edit(view===0?'staff':'period');
+$('backup').onclick=()=>{
+  const url=URL.createObjectURL(new Blob([JSON.stringify(state)],{type:'application/json'}));
+  const a=document.createElement('a');a.href=url;a.download='제니엘_연차관리_데이터.json';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
+};
+$('restore').onclick=()=>$('file').click();
+$('file').onchange=async e=>{
+  try{
+    if(!e.target.files[0])return;
+    const data=checked(JSON.parse(await e.target.files[0].text()));
+    if((state.staff.length||state.periods.length)&&!confirm('현재 데이터 전체를 선택한 파일로 바꿀까요?'))return;
+    await save(data,true);feedback('데이터를 가져왔습니다.');
+  }catch(error){feedback(error.message);}finally{e.target.value='';}
+};
+for(const id of ['search','channel','today'])$(id).oninput=()=>{if(state)render();};
+$('today').value=koreaToday();
+$('mode').textContent=remote?'Google Sheets 연결':'로컬 파일 · 실제 메일 발송 없음';
+async function initialize(){
+  try {
+    state=checked(remote?await rpc('readLedger'):JSON.parse(localStorage.getItem(storeKey)||'null')||seed);
+    if (!remote && state !== seed) {
+      const existing = new Set(state.staff.map(employee=>employee.id));
+      const addedRetirees = seed.staff.filter(employee=>employee.status==='퇴사'&&!existing.has(employee.id));
+      if (addedRetirees.length) {
+        state.staff.push(...addedRetirees);
+        localStorage.setItem(storeKey,JSON.stringify(state));
+      }
+    }
+    render();feedback(remote?'계정에서 발송 모드와 트리거를 관리합니다.':'직원별 적용 기준은 직접 지정할 수 있습니다.');
+  }catch(error){feedback(error.message);}
+}
+initialize();
+</script></body></html>
